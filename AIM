@@ -1,0 +1,173 @@
+```lua
+-- AimAssistMobile.lua
+-- Coloque este LocalScript em StarterPlayerScripts
+-- Script simples de "aim assist" para mobile: centraliza a câmera no inimigo mais próximo
+-- IMPORTANTE: use apenas em seu próprio jogo / para aprendizado. Usar para trapacear em jogos alheios
+-- pode violar os Termos do Roblox.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local localPlayer = Players.LocalPlayer
+local playerGui = localPlayer:WaitForChild("PlayerGui")
+local camera = workspace.CurrentCamera
+
+-- Configurações
+local MAX_DISTANCE = 200    -- distância máxima para considerar um inimigo (studs)
+local MAX_FOV_DEG = 40      -- ângulo máximo (graus) do centro da tela para considerar alvo
+local SMOOTHNESS = 8        -- quanto maior, mais rápido o ajuste da câmera (lerp)
+local CHECK_RATE = 0.033    -- intervalo entre checagens (s). RenderStepped usa ~0; usamos Heartbeat
+local HEAD_OFFSET = Vector3.new(0, 1.5, 0) -- onde mirar no personagem inimigo (aprox. cabeça)
+local RAYCAST_IGNORE_LIST = {} -- prefiltra, será atualizado dinamicamente
+
+-- Estado
+local assistActive = false
+local lastTick = 0
+
+-- Cria um botão simples de "Assist" para mobile na tela (pode ser removido se já tiver seu próprio botão)
+local function createAimButton()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "AimAssistGui"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = playerGui
+
+    local btn = Instance.new("ImageButton")
+    btn.Name = "AimAssistButton"
+    btn.AnchorPoint = Vector2.new(1, 1)
+    btn.Position = UDim2.new(1, -20, 1, -20) -- canto inferior direito
+    btn.Size = UDim2.new(0, 84, 0, 84)
+    btn.BackgroundTransparency = 1
+    btn.Image = "rbxassetid://3570695787" -- círculo padrão (pode trocar)
+    btn.ImageColor3 = Color3.fromRGB(200, 60, 60)
+    btn.ImageTransparency = 0.2
+    btn.ScaleType = Enum.ScaleType.Slice
+    btn.SliceCenter = Rect.new(8, 8, 56, 56)
+    btn.Parent = screenGui
+
+    -- Touch events
+    btn.TouchStarted:Connect(function()
+        assistActive = true
+        btn.ImageColor3 = Color3.fromRGB(60, 200, 60)
+    end)
+    btn.TouchEnded:Connect(function()
+        assistActive = false
+        btn.ImageColor3 = Color3.fromRGB(200, 60, 60)
+    end)
+    -- Também permite toque do mouse (útil para testes no PC)
+    btn.MouseButton1Down:Connect(function()
+        assistActive = true
+        btn.ImageColor3 = Color3.fromRGB(60, 200, 60)
+    end)
+    btn.MouseButton1Up:Connect(function()
+        assistActive = false
+        btn.ImageColor3 = Color3.fromRGB(200, 60, 60)
+    end)
+end
+
+-- Retorna o personagem e o ponto alvo (Vector3) se válido
+local function getCharacterAimPoint(player)
+    if not player.Character then return nil end
+    local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+    local head = player.Character:FindFirstChild("Head")
+    if head then
+        return head.Position + HEAD_OFFSET
+    elseif hrp then
+        return hrp.Position + Vector3.new(0, 1.5, 0)
+    end
+    return nil
+end
+
+-- Verifica linha de visão simples (raycast) entre a câmera e o ponto do alvo
+local function hasLineOfSight(point)
+    local origin = camera.CFrame.Position
+    local direction = (point - origin)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    -- Monta lista de instâncias a ignorar (próprio personagem + câmera, etc)
+    local ignore = {localPlayer.Character}
+    params.FilterDescendantsInstances = ignore
+    local result = workspace:Raycast(origin, direction, params)
+    if not result then
+        return true
+    end
+    -- se o primeiro hit for parte do personagem alvo, então há LOS
+    -- caso contrário obstrui.
+    return false
+end
+
+-- Retorna o jogador inimigo mais próximo (por distância) satisfazendo filtros
+local function findClosestEnemy()
+    local bestPlayer = nil
+    local bestDist = MAX_DISTANCE + 1
+    local camPos = camera.CFrame.Position
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= localPlayer and p.Character and p.Character:FindFirstChild("Humanoid") and p.Character.Humanoid.Health > 0 then
+            -- time diferente?
+            if localPlayer.Team and p.Team and (localPlayer.Team ~= p.Team) or (localPlayer.Team == nil and p.Team ~= nil) or (localPlayer.Team ~= nil and p.Team == nil) then
+                local aimPoint = getCharacterAimPoint(p)
+                if aimPoint then
+                    local dist = (aimPoint - camPos).Magnitude
+                    if dist <= MAX_DISTANCE and dist < bestDist then
+                        -- checa ângulo de FOV (quanto está próximo do centro da câmera)
+                        local lookVector = camera.CFrame.LookVector
+                        local dir = (aimPoint - camPos).Unit
+                        local angle = math.deg(math.acos(math.clamp(lookVector:Dot(dir), -1, 1)))
+                        if angle <= MAX_FOV_DEG then
+                            -- checa linha de visão
+                            if hasLineOfSight(aimPoint) then
+                                bestPlayer = p
+                                bestDist = dist
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return bestPlayer
+end
+
+-- Aponta a câmera suavemente para targetPos
+local function aimAt(targetPos, dt)
+    local camPos = camera.CFrame.Position
+    local desiredCFrame = CFrame.new(camPos, targetPos)
+    -- Lerping entre CFrames (posição fixa, apenas ajuste de rotação)
+    local alpha = 1 - math.exp(-SMOOTHNESS * dt) -- suavização baseada em dt
+    camera.CFrame = camera.CFrame:Lerp(desiredCFrame, alpha)
+end
+
+-- Gatilho principal: loop de atualização
+local function startLoop()
+    local heartbeatConn
+    heartbeatConn = RunService.Heartbeat:Connect(function(dt)
+        lastTick = lastTick + dt
+        if lastTick < CHECK_RATE then return end
+        lastTick = 0
+
+        if not assistActive then return end
+        if not camera or not camera.Parent then return end
+        if not localPlayer.Character then return end
+
+        local enemy = findClosestEnemy()
+        if enemy then
+            local aimPoint = getCharacterAimPoint(enemy)
+            if aimPoint then
+                aimAt(aimPoint, CHECK_RATE)
+            end
+        end
+    end)
+end
+
+-- Setup automático: cria botão se dispositivo mobile. Se for desktop e quiser testar, o botão também aparece.
+createAimButton()
+startLoop()
+
+-- Observers para atualização de filtro quando personagem for trocado (opcional)
+Players.PlayerRemoving:Connect(function(p)
+    -- nada a fazer; garbage collection normal
+end)
+
+-- Nota: este script manipula a câmera do cliente local. Para que os tiros realmente acertem o inimigo
+-- no servidor, o sistema de armas do seu jogo deve usar a direção atual da câmera do cliente ou aplicar
+-- correção no servidor (ex: projectiles que procuram o alvo). Este script apenas move a mira do jogador.
