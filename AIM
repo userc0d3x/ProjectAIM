@@ -288,13 +288,27 @@ end
 -- Retorna o personagem e o ponto alvo (Vector3) se válido
 local function getCharacterAimPoint(player)
     if not player.Character then return nil end
-    local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+
     local head = player.Character:FindFirstChild("Head")
+    -- tenta encontrar o "peito"/torso em R15/R6/legacy:
+    local upperTorso = player.Character:FindFirstChild("UpperTorso") or player.Character:FindFirstChild("Torso") or player.Character:FindFirstChild("HumanoidRootPart")
+
+    -- Se tivermos cabeça e torso, mire no ponto médio entre os dois (meio termo: cabeça <-> peito)
+    if head and upperTorso then
+        return (head.Position + upperTorso.Position) / 2
+    end
+
+    -- Fallbacks: se apenas cabeça
     if head then
         return head.Position + HEAD_OFFSET
-    elseif hrp then
-        return hrp.Position + Vector3.new(0, 1.5, 0)
     end
+
+    -- se apenas torso/HRP
+    if upperTorso then
+        -- aproximar-se do peito um pouco acima do centro do torso
+        return upperTorso.Position + Vector3.new(0, 1.0, 0)
+    end
+
     return nil
 end
 
