@@ -62,7 +62,7 @@ local function createLoadingToControlUI()
     loadingLabel.Font = Enum.Font.SourceSansBold
     loadingLabel.TextSize = 16
     loadingLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
-    loadingLabel.Text = "Carregando..."
+    loadingLabel.Text = "carregando..." -- exibirá por 5 segundos
     loadingLabel.Parent = centerFrame
 
     -- Small spinner (simple rotation using RenderStepped)
@@ -83,7 +83,7 @@ local function createLoadingToControlUI()
     end)
 
     -- After a short delay, transform em janela de controle
-    local TRANSFORM_DELAY = 1.0
+    local TRANSFORM_DELAY = 5.0 -- agora espera 5 segundos mostrando "carregando..."
 
     delay(TRANSFORM_DELAY, function()
         if not centerFrame or not centerFrame.Parent then return end
