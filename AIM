@@ -1,6 +1,6 @@
 -- AimAssistMobile.lua
 -- Coloque este LocalScript em StarterPlayerScripts
--- Atualizado: maior alcance + tela de carregamento central que se transforma em janela
+-- Atualizado: sempre ativo, UI removida, alcance aumentado e verificação de linha de visão melhorada
 -- Observação: use apenas em seu próprio jogo / para aprendizado. Usar para trapacear em jogos alheios
 -- pode violar os Termos do Roblox.
 
@@ -10,280 +10,18 @@ local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 
 local localPlayer = Players.LocalPlayer
-local playerGui = localPlayer:WaitForChild("PlayerGui")
 local camera = workspace.CurrentCamera
 
 -- Configurações (ajustadas)
-local MAX_DISTANCE = 1200    -- distância máxima para considerar um inimigo (studs) - aumentado
+local MAX_DISTANCE = 8000    -- distância máxima para considerar um inimigo (studs) - aumentada bastante
 local MAX_FOV_DEG = 45       -- ângulo máximo (graus) do centro da tela para considerar alvo
 local SMOOTHNESS = 8         -- quanto maior, mais rápido o ajuste da câmera (lerp)
 local CHECK_RATE = 0.033     -- intervalo entre checagens (s)
 local HEAD_OFFSET = Vector3.new(0, 1.5, 0) -- onde mirar no personagem inimigo (aprox. cabeça)
 
 -- Estado
-local assistActive = false
+local assistActive = true -- sempre ativo
 local lastTick = 0
-
--- UI: loading -> painel de controle
-local function createLoadingToControlUI()
-    -- Remove GUI antigo se existir
-    local existing = playerGui:FindFirstChild("AimAssistGui")
-    if existing then existing:Destroy() end
-
-    local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "AimAssistGui"
-    screenGui.ResetOnSpawn = false
-    screenGui.Parent = playerGui
-
-    -- Small centered loading circle/frame
-    local centerFrame = Instance.new("Frame")
-    centerFrame.Name = "CenterFrame"
-    centerFrame.AnchorPoint = Vector2.new(0.5, 0.5)
-    centerFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
-    centerFrame.Size = UDim2.new(0, 64, 0, 64)
-    centerFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-    centerFrame.BackgroundTransparency = 0
-    centerFrame.BorderSizePixel = 0
-    centerFrame.ZIndex = 10
-    centerFrame.Parent = screenGui
-    centerFrame.ClipsDescendants = true
-    centerFrame.AutomaticSize = Enum.AutomaticSize.None
-    centerFrame.AnchorPoint = Vector2.new(0.5, 0.5)
-    centerFrame.Visible = true
-    centerFrame.Name = "LoadingFrame"
-
-    local corner = Instance.new("UICorner", centerFrame)
-    corner.CornerRadius = UDim.new(0, 12)
-
-    local loadingLabel = Instance.new("TextLabel")
-    loadingLabel.Name = "LoadingLabel"
-    loadingLabel.BackgroundTransparency = 1
-    loadingLabel.Size = UDim2.new(1, 0, 1, 0)
-    loadingLabel.Font = Enum.Font.SourceSansBold
-    loadingLabel.TextSize = 16
-    loadingLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
-    loadingLabel.Text = "carregando..." -- exibirá por 5 segundos
-    loadingLabel.Parent = centerFrame
-
-    -- Small spinner (simple rotation using RenderStepped)
-    local spinner = Instance.new("Frame")
-    spinner.Name = "Spinner"
-    spinner.Size = UDim2.new(0, 40, 0, 4)
-    spinner.BackgroundColor3 = Color3.fromRGB(200, 200, 200)
-    spinner.Position = UDim2.new(0.5, -20, 1, -12)
-    spinner.Parent = centerFrame
-    local spinnerCorner = Instance.new("UICorner", spinner)
-    spinnerCorner.CornerRadius = UDim.new(0, 2)
-
-    local spinAngle = 0
-    local spinConn
-    spinConn = RunService.RenderStepped:Connect(function(dt)
-        spinAngle = (spinAngle + 720 * dt) % 360
-        spinner.Rotation = spinAngle
-    end)
-
-    -- After a short delay, transform em janela de controle
-    local TRANSFORM_DELAY = 5.0 -- agora espera 5 segundos mostrando "carregando..."
-
-    delay(TRANSFORM_DELAY, function()
-        if not centerFrame or not centerFrame.Parent then return end
-
-        -- Stop spinner when transforming (we will reuse spinner bar inside panel)
-        if spinConn then
-            spinConn:Disconnect()
-            spinConn = nil
-        end
-
-        -- Tween para tamanho maior (janela)
-        local targetSize = UDim2.new(0, 300, 0, 160)
-        local tweenInfo = TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-        TweenService:Create(centerFrame, tweenInfo, {Size = targetSize}):Play()
-        -- Ajusta cantos
-        TweenService:Create(corner, tweenInfo, {CornerRadius = UDim.new(0, 10)}):Play()
-
-        -- depois de tween, monta conteúdo da janela
-        delay(0.36, function()
-            -- Limpa elementos antigos
-            for _, child in ipairs(centerFrame:GetChildren()) do
-                child:Destroy()
-            end
-
-            -- Título
-            local title = Instance.new("TextLabel")
-            title.Name = "Title"
-            title.BackgroundTransparency = 1
-            title.Size = UDim2.new(1, -12, 0, 28)
-            title.Position = UDim2.new(0, 8, 0, 8)
-            title.Font = Enum.Font.SourceSansBold
-            title.TextSize = 18
-            title.TextColor3 = Color3.fromRGB(240, 240, 240)
-            title.Text = "Aim Assist"
-            title.TextXAlignment = Enum.TextXAlignment.Left
-            title.Parent = centerFrame
-
-            -- Close button (minimizar/fechar)
-            local closeBtn = Instance.new("TextButton")
-            closeBtn.Name = "CloseBtn"
-            closeBtn.Size = UDim2.new(0, 28, 0, 28)
-            closeBtn.Position = UDim2.new(1, -36, 0, 8)
-            closeBtn.Text = "X"
-            closeBtn.Font = Enum.Font.SourceSansBold
-            closeBtn.TextSize = 18
-            closeBtn.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
-            closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-            closeBtn.AutoButtonColor = true
-            closeBtn.Parent = centerFrame
-            local closeCorner = Instance.new("UICorner", closeBtn)
-            closeCorner.CornerRadius = UDim.new(0, 6)
-
-            -- Status label
-            local status = Instance.new("TextLabel")
-            status.Name = "Status"
-            status.BackgroundTransparency = 1
-            status.Size = UDim2.new(1, -16, 0, 22)
-            status.Position = UDim2.new(0, 8, 0, 46)
-            status.Font = Enum.Font.SourceSans
-            status.TextSize = 14
-            status.TextColor3 = Color3.fromRGB(200, 200, 200)
-            status.Text = "Assistência: Desativada"
-            status.TextXAlignment = Enum.TextXAlignment.Left
-            status.Parent = centerFrame
-
-            -- Toggle button
-            local toggleBtn = Instance.new("TextButton")
-            toggleBtn.Name = "ToggleBtn"
-            toggleBtn.Size = UDim2.new(0, 120, 0, 40)
-            toggleBtn.Position = UDim2.new(0, 8, 0, 76)
-            toggleBtn.Text = "Ativar"
-            toggleBtn.Font = Enum.Font.SourceSansBold
-            toggleBtn.TextSize = 18
-            toggleBtn.BackgroundColor3 = Color3.fromRGB(60, 160, 60)
-            toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-            toggleBtn.Parent = centerFrame
-            local toggleCorner = Instance.new("UICorner", toggleBtn)
-            toggleCorner.CornerRadius = UDim.new(0, 8)
-
-            -- Info small
-            local info = Instance.new("TextLabel")
-            info.Name = "Info"
-            info.BackgroundTransparency = 1
-            info.Size = UDim2.new(1, -16, 0, 36)
-            info.Position = UDim2.new(0, 8, 0, 124)
-            info.Font = Enum.Font.SourceSansItalic
-            info.TextSize = 12
-            info.TextColor3 = Color3.fromRGB(170, 170, 170)
-            info.Text = "Alcance: " .. tostring(MAX_DISTANCE) .. " studs   |   FOV: " .. tostring(MAX_FOV_DEG) .. "°"
-            info.TextXAlignment = Enum.TextXAlignment.Left
-            info.Parent = centerFrame
-
-            -- Função para atualizar visual do toggle
-            local function updateToggleVisual()
-                if assistActive then
-                    toggleBtn.Text = "Desativar"
-                    toggleBtn.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
-                    status.Text = "Assistência: Ativada"
-                else
-                    toggleBtn.Text = "Ativar"
-                    toggleBtn.BackgroundColor3 = Color3.fromRGB(60, 160, 60)
-                    status.Text = "Assistência: Desativada"
-                end
-            end
-
-            -- Ao clicar toggle
-            local function onTogglePressed()
-                assistActive = not assistActive
-                updateToggleVisual()
-            end
-
-            -- Connect both touch/mouse events
-            toggleBtn.MouseButton1Click:Connect(onTogglePressed)
-            toggleBtn.TouchTap:Connect(onTogglePressed)
-
-            -- Close: volta para um pequeno ícone minimizado no canto inferior direito
-            local minimized = false
-            local originalPos = centerFrame.Position
-            local function minimizeToCorner()
-                if minimized then return end
-                minimized = true
-                local tweenInfo2 = TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-                TweenService:Create(centerFrame, tweenInfo2, {Size = UDim2.new(0, 64, 0, 64), Position = UDim2.new(1, -84, 1, -84)}):Play()
-                -- remover children e colocar um small image to reopen
-                delay(0.3, function()
-                    for _, c in ipairs(centerFrame:GetChildren()) do
-                        c:Destroy()
-                    end
-                    local miniBtn = Instance.new("TextButton")
-                    miniBtn.Name = "MiniOpen"
-                    miniBtn.Size = UDim2.new(1, 0, 1, 0)
-                    miniBtn.BackgroundTransparency = 1
-                    miniBtn.Text = ""
-                    miniBtn.Parent = centerFrame
-                    local miniIcon = Instance.new("ImageLabel")
-                    miniIcon.Size = UDim2.new(0, 44, 0, 44)
-                    miniIcon.Position = UDim2.new(0.5, -22, 0.5, -22)
-                    miniIcon.BackgroundTransparency = 1
-                    miniIcon.Image = "rbxassetid://3570695787"
-                    miniIcon.ImageColor3 = Color3.fromRGB(200, 60, 60)
-                    miniIcon.Parent = centerFrame
-
-                    -- reabrir
-                    local function reopen()
-                        minimized = false
-                        TweenService:Create(centerFrame, TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = targetSize, Position = originalPos}):Play()
-                        delay(0.3, function()
-                            -- reinvoca a transformação para repovoar os conteúdos
-                            -- Simplesmente destruir e recriar tudo (chamar a função recursivamente para reconstruir)
-                            screenGui:Destroy()
-                            createLoadingToControlUI()
-                        end)
-                    end
-                    miniBtn.MouseButton1Click:Connect(reopen)
-                    miniBtn.TouchTap:Connect(reopen)
-                end)
-            end
-
-            closeBtn.MouseButton1Click:Connect(minimizeToCorner)
-            closeBtn.TouchTap:Connect(minimizeToCorner)
-
-            -- Permitir arrastar a janela (touch e mouse)
-            local dragging = false
-            local dragStart = Vector2.new(0, 0)
-            local startPos = centerFrame.Position
-
-            local function inputBegan(input)
-                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                    dragging = true
-                    dragStart = input.Position
-                    startPos = centerFrame.Position
-                    input.Changed:Connect(function()
-                        if input.UserInputState == Enum.UserInputState.End then
-                            dragging = false
-                        end
-                    end)
-                end
-            end
-
-            local function inputChanged(input)
-                if dragging and input and input.Position then
-                    local delta = input.Position - dragStart
-                    local absX = math.clamp(startPos.X.Offset + delta.X, 8, math.max(8, workspace.CurrentCamera.ViewportSize.X - centerFrame.Size.X.Offset - 8))
-                    local absY = math.clamp(startPos.Y.Offset + delta.Y, 8, math.max(8, workspace.CurrentCamera.ViewportSize.Y - centerFrame.Size.Y.Offset - 8))
-                    centerFrame.Position = UDim2.new(0, absX, 0, absY)
-                end
-            end
-
-            centerFrame.InputBegan:Connect(inputBegan)
-            centerFrame.InputChanged:Connect(function(input)
-                if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-                    inputChanged(input)
-                end
-            end)
-
-            -- salva estado visual atual
-            updateToggleVisual()
-        end)
-    end)
-end
 
 -- Retorna o personagem e o ponto alvo (Vector3) se válido
 local function getCharacterAimPoint(player)
@@ -312,8 +50,9 @@ local function getCharacterAimPoint(player)
     return nil
 end
 
--- Verifica linha de visão simples (raycast) entre a câmera e o ponto do alvo
-local function hasLineOfSight(point)
+-- Verifica linha de visão simples (raycast) entre a câmera e o ponto do alvo.
+-- Agora recebe também targetCharacter para determinar se o primeiro hit é o próprio alvo.
+local function hasLineOfSight(point, targetCharacter)
     if not camera then return false end
     local origin = camera.CFrame.Position
     local direction = (point - origin)
@@ -324,19 +63,22 @@ local function hasLineOfSight(point)
         table.insert(ignore, localPlayer.Character)
     end
     params.FilterDescendantsInstances = ignore
+
     local result = workspace:Raycast(origin, direction, params)
+    -- Se não houve nenhum hit, consideramos que há LOS
     if not result then
         return true
     end
-    -- se o primeiro hit for parte do personagem alvo, então há LOS
+
     if result and result.Instance then
-        local hitPart = result.Instance
-        if hitPart and hitPart:IsDescendantOf(workspace) then
-            -- Se o hit faz parte de qualquer personagem diferente do localPlayer, consideramos obstruído
-            -- (Para aprimorar: permitir se o hit pertence ao próprio alvo)
-            return false
+        -- Se o primeiro hit fizer parte do próprio alvo, então LOS existe
+        if targetCharacter and result.Instance:IsDescendantOf(targetCharacter) then
+            return true
         end
+        -- Caso contrário está obstruído
+        return false
     end
+
     return false
 end
 
@@ -364,8 +106,8 @@ local function findClosestEnemy()
                         local dot = math.clamp(lookVector:Dot(dir), -1, 1)
                         local angle = math.deg(math.acos(dot))
                         if angle <= MAX_FOV_DEG then
-                            -- checa linha de visão
-                            if hasLineOfSight(aimPoint) then
+                            -- checa linha de visão (agora verifica se o primeiro hit é o alvo)
+                            if hasLineOfSight(aimPoint, p.Character) then
                                 bestPlayer = p
                                 bestDist = dist
                             end
@@ -388,8 +130,10 @@ local function aimAt(targetPos, dt)
 end
 
 -- Gatilho principal: loop de atualização
+local heartbeatConn
 local function startLoop()
-    RunService.Heartbeat:Connect(function(dt)
+    if heartbeatConn then return end
+    heartbeatConn = RunService.Heartbeat:Connect(function(dt)
         lastTick = lastTick + dt
         if lastTick < CHECK_RATE then return end
         lastTick = 0
@@ -408,8 +152,7 @@ local function startLoop()
     end)
 end
 
--- Inicialização UI + loop
-createLoadingToControlUI()
+-- Inicialização: sem UI (sempre ativo)
 startLoop()
 
 -- Observers para atualização de filtro quando personagem for trocado (opcional)
